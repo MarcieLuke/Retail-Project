@@ -1,0 +1,411 @@
+---
+title: "Retail Project"
+author: "Marcie Joylynn Luke"
+date: "12/05/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+```{r cars}
+library(fpp3)
+```
+
+
+
+```{r pressure, echo=FALSE}
+set.seed(30559898)
+myseries <- aus_retail %>%
+  # Remove discontinued series
+  filter(!(`Series ID` %in% c("A3349561R","A3349883F","A3349499L","A3349902A",
+                        "A3349588R","A3349763L","A3349372C","A3349450X",
+                        "A3349679W","A3349378T","A3349767W","A3349451A"))) %>%
+  # Select a series at random
+  filter(`Series ID` == sample(`Series ID`,1))
+```
+
+
+# Statistical Features of the Data
+
+Overtime, we could see there is an upward trend, although there has been a lot of volatility in the data.
+Turnover tend to fall in February and increase in December which is its highest turnover for the year. The magnitude of the changes in turnover seems to be more volatile for the more recent years.
+
+This seasonality pattern observed previously from seasonality graph also supported by graph of the subseries, where it could be seen that average of the turnover for December across the years is the highest compared to other months, as well as February having the lowest average turnover across the years. Turnover across years have been increasing for each month, on average. It is also observed that 2005 seems to have a very significant higher turnover for each months compared to other years. 
+ 
+
+```{r}
+myseries %>%
+  autoplot(Turnover) +
+  labs(y = "Turnover (million $AUD)", x = "Time (Years)",
+       title = myseries$Industry[1],
+       subtitle = myseries$State[1])
+
+myseries %>%
+  gg_season(Turnover, labels = "both") +
+  labs(y = "Turnover (million $AUD)",
+       title = myseries$Industry[1],
+       subtitle = myseries$State[1])
+
+myseries %>%
+  gg_subseries(Turnover) +
+  labs(y = "Turnover (million $AUD)", x="")
+```
+
+
+
+# A. ETS model
+
+## 1. Fit the model
+
+The best ETS model is model with multiplicative error, additional damped trend, and multiplicative seasonality. This could be obtained automatically without specifying specification of the ets model when training the data. 
+
+We could also compared this model with other ETS model to find out which one has the lowest AIC. In this case, M,N,M(multiplicative error,no trend, and multiplicative season) and M,A,M(multiplicative error,additive trend, and multiplicative season) model are chosen as comparison to M,Ad,M model.
+
+It could be shown that M,Ad, M model is the best model for the retail data as it has lowest AIC. 
+
+
+```{r}
+myseries_tr <- myseries %>% head(417)
+best_ets <- myseries_tr %>% model(best=ETS(Turnover))
+try_ets <- myseries_tr %>% model(best=ETS(Turnover),mnm=ETS(Turnover~error("M")+trend("N")+season("M")), mam=ETS(Turnover~error("M")+trend("A")+season("M")))
+
+glance(try_ets) %>% select(State:AICc) %>% arrange(AIC)
+
+report(best_ets)
+tidy(best_ets)
+
+```
+
+## 2. Produce Forecast 
+
+Forecast for the last 24 months of the original data is produced, as well as its 80% prediction interval. The plot comparing th actual values and the forecasted values is shown below. It could be seen that the model has captured the the information well, as the forecasted value is quite similar to the actual values. 
+
+```{r}
+test_fc_ets <- best_ets %>% forecast(h="24 months")  
+interval <- test_fc_ets %>% mutate(interval=hilo(Turnover,0.80)) %>% pull(interval)
+test_fc_ets <- test_fc_ets %>% mutate(Interval=interval)
+test_fc_ets
+
+best_ets %>% forecast(h="24 months") %>% autoplot(myseries)+labs(title="Other specialised food retailing in NSW",y="Turnover(million $AUD)")
+
+
+```
+
+## 3. Residual Diagnostic
+
+As shown from the acf of the residual, there are still some correlation in the residual, which means the model has not fully capture the available information. This is also supported by the ljung-box test (pval=6.476627e-05), where we can reject the null that there is no serial correlation in the residual up to 36 lags, at 5% level of significant. 
+
+
+```{r}
+best_ets %>% gg_tsresiduals()
+
+best_ets %>%
+  augment() %>%
+  features(.innov, ljung_box, dof = 18, lag = 36)
+```
+
+# B. ARIMA Model
+
+## 1. Checking for Stationarity
+
+For ARIMA model, it is important that the data to be fitted is stationary. 
+It could be seen from the graph, the existence of the upward trend and seasonality in the data. From the ACF, it could be seen that it is decaying slowly.Thus, we can conclude that the data is not stationary. 
+Furthermore, unit root test is also performed. As pvalue(0.01)<0.05, we can reject the null that there is no unit root, at 5% level of significance. Thus, we also conclude the data is not stationary. 
+
+```{r}
+myseries_tr %>% gg_tsdisplay(plot_type="partial")
+myseries_tr %>% features(Turnover,unitroot_kpss)
+
+```
+
+
+## 2. Transformation
+
+It is known previously that the data is not stationary. Thus, to stabilize the variance, transformation needs to be done.
+
+The appropriate $\lambda$ to be chosen, is the $\lambda$ in which the variation of the data seems constant over time. As the variation increases as Turnover increases, $\lambda$ is supposed to be less than 1. 
+
+As chosen by the guerrero features, the $\lambda$ to be chosen is -0.4039. This balance the seasonal fluctuation and random variation across the series. However, we still need to check again the resulting plot of the transformation, because sometimes lambda suggested by guerrero might not be very suitable for some cases. Compring the plot when data is transformed using box_cox and log, box_cox transformation performs better than a log transformation in making the variation of the data seems constant over time. Thus, box-cox transformation with $\lambda=-0.4039$ is chosen. 
+
+
+
+
+```{r}
+lambda <- myseries_tr %>% features(Turnover,features=guerrero)%>% pull(lambda_guerrero)
+
+myseries_tr %>% autoplot(log(Turnover))+ylab("Log Transformed Turnover")+labs(title="Other specialised food retailing in NSW")
+
+myseries_tr %>% autoplot(box_cox(Turnover,lambda))+ylab("Box-Cox Transformed Turnover")+labs(title="Other specialised food retailing in NSW")
+
+
+
+
+```
+
+## 3. Checking for Differencing
+
+After doing th transformation, the data is not yet stationary as the ACF is decreasing slowly. Thus, we need to the differencing, to stabilize the mean. 
+
+There are still some seasonality left in the transformed data, thus we might need to do seasoanal differencing. As this is monthly data, we will use lag=12. It could be argued that we might need another first difference to make the data stationary. This is beacuse, according to the ACF plot, the lag is still significant up to lag 9. Furthermore, we can reject the null that there is no unit root from the unit root test. 
+After adding for the first differencing, the data looks stationary, as shown from the ACF, also we cannot reject the null that there is no unit root from the unit root test, at 5% level of significance. 
+
+
+```{r}
+myseries_tr %>% gg_tsdisplay(box_cox(Turnover,lambda), plot_type = "partial")+labs(title="Other specialised food retailing in NSW")
+
+#Seasonal differencing
+myseries_tr %>% gg_tsdisplay((box_cox(Turnover,lambda) %>% difference(12)),plot_type="partial")+labs(title="Other specialised food retailing in NSW")
+myseries_tr %>% mutate(diff=difference(box_cox(Turnover,lambda),12)) %>% features(diff,unitroot_kpss)
+
+#Adding first difference
+myseries_tr %>% gg_tsdisplay((box_cox(Turnover,lambda) %>% difference(12)%>% difference(1)),plot_type="partial") +labs(title="Other specialised food retailing in NSW")
+myseries_tr %>% mutate(diff=difference(difference(box_cox(Turnover,lambda),12),1)) %>% features(diff,unitroot_kpss)
+
+
+
+
+  
+```
+## 4. Fit the Model
+
+It could be seen from the PACF that there is a spike up to lag 2, so p=2. Or, as showed by ACF plot there is a significant lag up to lag 2 so q=2 might be appropriate.We know previously that to make the data stationary, we take first differencing, so d=1 might be appropriate. 
+
+To account for the seasonal component, it could be seen from the PACF, that lag 12 and 24 are significant, so P=2 might be appropriate, or based on ACF plot, lag 12 and 24 are significant, so Q=2 might be appropriate. We know previously that we take seasonal differencing, so D=1 will be appropriate. 
+
+Thus, some ARIMA models that might be suitable are ARIMA(2,1,0)(2,1,0), ARIMA(2,1,0)(0,1,2), ARIMA(0,1,2)(2,1,0), and ARIMA(0,1,2)(0,1,2). 
+
+Just looking from the ACF and PACF, we can only determine p or q, P or Q, but not both.
+
+It has been decided not to include a constant, as we have 2 differencing, so including a constant will make long-term forecast follow a quadratic trend. Having c=0 and having 2 differencing will make the long-term forecast follow a straight line. 
+
+As all of the models have the same number of differencing, AICc could be used to choose the more suitable model. It could be seen that the auto model has the lowest AICc, where auto model is ARIMA(0,1,2)(0,1,2). 
+
+
+
+```{r}
+myseries_tr%>% gg_tsdisplay((box_cox(Turnover,lambda) %>% difference(12)%>% difference(1)),plot_type="partial") 
+
+arima <- myseries_tr%>% model(arima210210=ARIMA(box_cox(Turnover,lambda)~0+pdq(2,1,0)+PDQ(2,1,0)),
+                              arima210012=ARIMA(box_cox(Turnover,lambda)~0+pdq(2,1,0)+PDQ(2,1,0)),
+                              arima012210=ARIMA(box_cox(Turnover,lambda)~0+pdq(2,1,0)+PDQ(2,1,0)),
+                              arima012012=ARIMA(box_cox(Turnover,lambda)~0+pdq(0,1,2)+PDQ(0,1,2)),
+                              auto=ARIMA(box_cox(Turnover,lambda)))
+
+arima %>% glance() %>% arrange(AICc) %>% select(State:AICc)
+
+best_arima <- myseries_tr %>%model(ARIMA(box_cox(Turnover,lambda)~0+pdq(0,1,2)+PDQ(0,1,2)))
+
+best_arima %>% report()
+best_arima %>% tidy()
+```
+
+## 5. Forecast
+
+Forecast for the last 24 months of the original data is produced, as well as its 80% prediction interval. The plot comparing th actual values and the forecasted values is shown below. It could be seen that the model has captured the the information well, as the forecasted value is quite similar to the actual values.
+
+```{r}
+test_fc_arima <- best_arima%>% forecast(h="24 months")
+
+interval_arima <- test_fc_arima %>% mutate(interval=hilo(Turnover,0.80)) %>% pull(interval)
+test_fc_arima <- test_fc_arima %>% mutate(Interval=interval_arima)
+test_fc_arima
+
+test_fc_arima %>% autoplot(myseries)+labs(title="Other specialised food retailing in NSW",y="Turnover(million $AUD)")
+
+
+
+```
+
+## 6. Residual Diagnostics
+
+There are still a little bit of autocorrelation in the residual as shown by the ACF, as it is significant at lag 6. 
+From the ljung-box test(pvalue=0.007), it could be seen that we can reject the null that there is no autocorrelation in residual at 5% level of significance. 
+
+```{r}
+best_arima %>% gg_tsresiduals()
+
+best_arima%>%
+  augment() %>%
+  features(.innov, ljung_box, dof = 4, lag = 24)
+```
+# C. Comparing ETS and ARIMA
+
+As could be seen, ARIMA(0,1,2)(0,1,2) model has better accuracy in forecasting the 24 months, as it has lower RMSE and MASE compared to ETS(M,Ad,M) model. Furthermore, it could be seen that the forecast produced by ARIMA(0,1,2)(0,1,2) has wider prediction interval than the ETS model, which means it captures the uncertainty about the future
+Therefore, ARIMA(0,1,2)(0,1,2) model is preferred. 
+
+
+
+```{r}
+model_combined <- myseries_tr %>% model(ets=ETS(Turnover),arima=ARIMA(box_cox(Turnover,lambda)~0+pdq(0,1,2)+PDQ(0,1,2)))
+
+fc_combined <- model_combined %>% forecast(h="24 months")
+fc_combined %>% accuracy(myseries) %>% arrange(RMSE)
+
+model_combined %>% forecast(h="24 months") %>% autoplot(myseries) +labs(title="Other specialised food retailing in NSW",y="Turnover(million $AUD)")
+```
+
+
+# Forecasting Next 2 Years Data
+
+
+
+```{r}
+new_data <- read.csv("abs_new.csv") %>% mutate(Month=yearmonth(Month)) 
+colnames(new_data)[1] <- "State"
+new_data <- new_data %>% mutate(Month=yearmonth(Month))%>% as_tsibble(key=c(State,Industry))
+```
+
+
+Overtime, we could see there is an upward trend, although there has been a lot of volatility in the data.
+Turnover tend to fall in February and increase in December which is its highest turnover for the year. The magnitude of the changes in turnover seems to be more volatile for the more recent years.
+
+This seasonality pattern observed previously from seasonality graph also supported by graph of the subseries, where it could be seen that average of the turnover for December across the years is the highest compared to other months, as well as February having the lowest average turnover across the years. Turnover across years have been increasing for each month, on average. 
+ 
+
+```{r}
+new_data %>% autoplot(Turnover) +
+  labs(y = "Turnover (million $AUD)", x = "Time (Years)",
+       title = myseries$Industry[1],
+       subtitle = myseries$State[1])
+
+new_data %>%
+  gg_season(Turnover, labels = "both") +
+  labs(y = "Turnover (million $AUD)",
+       title = myseries$Industry[1],
+       subtitle = myseries$State[1])
+
+new_data %>%
+  gg_subseries(Turnover) +
+  labs(y = "Turnover (million $AUD)", x="")
+```
+
+
+
+# A. ETS model
+
+## 1. Fit the model
+
+
+```{r}
+myseries_n <- myseries %>% select(-`Series ID`)
+best_ets_n <- myseries_n%>% model(ETS(Turnover~error("M")+trend("Ad")+season("M")))
+
+report(best_ets_n)
+tidy(best_ets_n)
+
+```
+
+## 2. Produce Forecast 
+
+Forecast for the next 2 years is produced. The plot comparing th actual values and the forecasted values is shown below, as well as its 80% prediction interval. It could be seen that the model has captured the the information well, as the forecasted value is quite similar to the actual values.
+
+```{r}
+test_fc_ets_n <- best_ets_n %>% forecast(h="2 years")  
+interval_n <- test_fc_ets_n %>% mutate(interval=hilo(Turnover,0.80)) %>% pull(interval)
+test_fc_ets_n <- test_fc_ets_n %>% mutate(Interval=interval)
+test_fc_ets_n
+
+best_ets_n %>% forecast(h="2 years") %>% autoplot(new_data)+labs(title="Other specialised food retailing in NSW",y="Turnover(million $AUD)")
+
+```
+
+
+
+# B. ARIMA Model
+
+## 1. Checking for Stationarity
+
+For ARIMA model, it is important that the data to be fitted is stationary. 
+It could be seen from the graph, the existence of the upward trend and seasonality in the data. Thus, we can conclude that the data is not stationary. 
+Furthermore, unit root test is also performed. As pvalue(0.01)<0.05, we can reject the null that there is no unit root, at 5% level of significance. Thus, we also conclude the data is not stationary. 
+
+```{r}
+myseries_n %>% gg_tsdisplay(plot_type="partial")
+myseries_n %>% features(Turnover,unitroot_kpss)
+
+```
+
+
+## 2. Transformation
+
+The appropriate $\lambda$ to be chosen, is the $\lambda$ in which the variation of the data seems constant over time. 
+As the variation increases as Turnover increases, $\lambda$ is supposed to be less than 1. 
+
+As chosen by the guerrero features, the $\lambda$ to be chosen is -0.3955691. This balance the seasonal fluctuation and random variation across the series. However, we still need to check again the resulting plot of the transformation, because sometimes lambda suggested by guerrero might not be very suitable for some cases. However, in this case, this Box-Cox transformation performs better than a log transformation in making the variation of the data seems constant over time. Thus, box-cox transformation with $\lambda=-0.3955691$ is chosen. 
+
+
+
+
+```{r}
+lambda_n <- myseries %>% features(Turnover,features=guerrero)%>% pull(lambda_guerrero)
+
+myseries_n %>% autoplot(log(Turnover))+ylab("Log Transformed Turnover")+labs(title="Other specialised food retailing in NSW")
+
+myseries_n %>% autoplot(box_cox(Turnover,lambda_n))+ylab("Box-Cox Transformed Turnover")+labs(title="Other specialised food retailing in NSW")
+
+
+
+```
+
+
+## 3. Fit the Model
+
+
+
+```{r}
+
+best_arima_n <- myseries_n %>%model(ARIMA(box_cox(Turnover,lambda_n)~0+pdq(0,1,2)+PDQ(0,1,2)))
+
+best_arima_n %>% report()
+best_arima_n %>% tidy()
+```
+
+## 4. Forecast
+
+Forecast for the next 2 years is produced. The plot comparing th actual values and the forecasted values is shown below, as well as its 80% prediction interval. It could be seen that the model has captured the the information well, as the forecasted value is quite similar to the actual values. 
+
+```{r}
+test_fc_arima_n <- best_arima_n%>% forecast(h="2 years")
+
+interval_arima_n <- test_fc_arima_n %>% mutate(interval=hilo(Turnover,0.8)) %>% pull(interval)
+test_fc_arima_n <- test_fc_arima_n %>% mutate(Interval=interval_arima_n)
+test_fc_arima_n
+
+test_fc_arima_n %>% autoplot(new_data)+labs(title="Other specialised food retailing in NSW",y="Turnover(million $AUD)")
+
+
+```
+
+
+
+# C. Comparing ETS and ARIMA
+
+In forecasting the 2 years past the end of data, ETS model performs better in terms of accuracy, as it has lower RMSE and MASE, compared to the ARIMA model. This result is in contrast to the result obtained when we use the model to forecast last 24 months data, where ARIMA model has better accuracy. 
+
+```{r}
+model_combined_n <- myseries_n %>% model(ets=ETS(Turnover~error("M")+trend("Ad")+season("M")),
+                                         arima=ARIMA(box_cox(Turnover,lambda_n)~0+pdq(0,1,2)+PDQ(0,1,2)))
+fc_combined_n <- model_combined_n %>% forecast(h="2 years")
+fc_combined_n %>% accuracy(new_data) %>% arrange(RMSE)
+model_combined_n %>% forecast(h="2 years") %>% autoplot(new_data) +labs(title="Other specialised food retailing in NSW",y="Turnover(million $AUD)")
+```
+
+# Benefit and Limitation of the Model
+
+The advantage of ARIMA on this data is that we see a strong autocorrelation in the data. So, an ARIMA model can do well in incorporating past data to forecast into the future. 
+
+Some major disadvantages of ARIMA forecasting are the process of choosing the order of p,d,q and P,D,Q can be subjective. Thus, the reliability of the chosen model can depend on the skill and experience of the forecaster.It is required that the data to be fitted into the ARIMA model to be stationary, which might required us to do transformation and differecing (reflected in the order of d and D). However, there might be some limitation on how many differencing we could use, for example it would be better to use not more than 2 differencing. Also, ARIMA model cannot perform well in change of trend as well as the ETS model. 
+
+The benefit of ETS model is that it gives more weight to recent observations. It is also possible to adjust the parameter values to change how quickly older observation lose their importance. Furthermore, in this case, we have additional damped trend, which might performs well where the trend component is expected to be damped instead of being linear. ETS model also do not need the data to be stationary. 
+
+
+
+
+
+
+
+
