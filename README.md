@@ -2,6 +2,8 @@
 
 The dataset consists of turnover across time for cafes, restaurant, and catering services in South Australia. 
 
+By utilizing RStudio, I fit the model into data and produce forecast. 
+
 Firstly, I explore statistical features of the data such as the trend, volatility, and seasonality. 
 
 The data is modelled using ETS and ARIMA. 
